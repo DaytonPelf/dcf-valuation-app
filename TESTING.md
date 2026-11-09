@@ -1,12 +1,12 @@
 # Prompt, Verification & Testing Documentation
 
-**Project:** DCF Valuation Studio  **Course:** FINAN 623  **Tester:** [Your Name]  **Date:** November 2026
+**Project:** DCF Valuation Studio  **Course:** FINAN 623  **Tester:** Dayton Pelfrey  **Date:** November 2026
 
 ---
 
 ## 1. AI prompt used (CRAFT framework)
 
-> **Context:** I'm a graduate student in FINAN 623 (Financial Modeling). Analysts often build DCF
+> **Context:** I'm a senior finance student in FINAN 623 (Financial Modeling). Analysts often build DCF
 > models in Excel, but a single-point DCF hides how sensitive the valuation is to assumptions like
 > WACC and terminal growth.
 >
