@@ -28,6 +28,7 @@ If Yahoo Finance is unavailable, the app shows a message and you can still enter
 | Tab | What it does |
 |---|---|
 | **Company data** | Profile, key stats, price chart, financial statements, and the source of every loaded input |
+| **Reverse DCF** | Solves for the revenue growth (or EBIT margin) the current share price implies, compares it with historical growth, and plugs the answer back in to prove it reproduces the market price |
 | **Valuation** | 5–10 year unlevered FCF projection, value bridge waterfall (PV of FCF + PV of TV − net debt = equity), implied price vs. market price, CSV download |
 | **Sensitivity** | WACC × terminal growth (or exit multiple) heat map; tornado chart ranking which input moves value most |
 | **Monte Carlo** | 1,000–25,000 simulations shocking growth, margin, WACC and terminal growth; shows 5th/50th/95th percentile values and the probability the stock is undervalued |
@@ -38,6 +39,17 @@ Other details:
 - Terminal value by **Gordon growth** or **exit EV/EBITDA multiple**, with cross-checks (implied multiple / implied growth)
 - **Mid-year discounting** option
 - Input validation and warnings (WACC ≤ g, negative equity, negative terminal FCF, aggressive terminal growth, TV > 80% of EV)
+
+## Reverse DCF
+Instead of asking "what is it worth?", the Reverse DCF tab asks "what must be true for today's price
+to be fair?" It finds the constant annual revenue growth (and, separately, the EBIT margin) at which
+model value = market price, holding every other input fixed. The solver scans for a sign change
+and then uses bisection to a precision of 1e-9. Each answer is shown with a plug-back check.
+
+## Data accuracy
+Live company data comes from Yahoo Finance, which is free but **unaudited**. It can contain errors,
+reclassifications or restatements. Verify key figures against the company's 10-K / 10-Q on
+[SEC EDGAR](https://www.sec.gov/edgar/search/) before using them in any analysis.
 
 ## Key formulas
 - FCF = EBIT × (1 − tax) + D&A − CapEx − ΔNWC

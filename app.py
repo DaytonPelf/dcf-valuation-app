@@ -165,6 +165,43 @@ def monte_carlo(a: Assumptions, n: int = 5_000, seed: int = 42,
     return (pv_fcf + pv_tv - a.net_debt) / a.shares
 
 
+
+# ---------------------------------------------------------------- reverse DCF
+def solve_input(a: Assumptions, field: str, target_price: float,
+                lo: float, hi: float, step: float = 0.005, tol: float = 1e-10):
+    """Find the value of one input (e.g. growth) that makes the implied price equal target_price.
+
+    Scans the range [lo, hi] for a sign change, then narrows it down by bisection.
+    Returns None if no value in the range produces the target price.
+    """
+    def setter(x):
+        if field == "growth":  # same growth rate in every projection year
+            return replace(a, growth_start=x, growth_end=x)
+        return replace(a, **{field: x})
+
+    def gap(x):
+        return value(setter(x))["price"] - target_price
+
+    grid = np.arange(lo, hi + step / 2, step)
+    gaps = [gap(x) for x in grid]
+    for i in range(len(grid) - 1):
+        if gaps[i] == 0:
+            return float(grid[i])
+        if np.sign(gaps[i]) != np.sign(gaps[i + 1]):
+            x0, x1, g0 = grid[i], grid[i + 1], gaps[i]
+            for _ in range(200):  # bisection
+                mid = (x0 + x1) / 2
+                gm = gap(mid)
+                if abs(x1 - x0) < tol:
+                    break
+                if np.sign(gm) == np.sign(g0):
+                    x0, g0 = mid, gm
+                else:
+                    x1 = mid
+            return float((x0 + x1) / 2)
+    return None
+
+
 # =============================================================================
 # PART 2 - STREAMLIT USER INTERFACE
 # =============================================================================
@@ -410,7 +447,7 @@ with st.sidebar.container(border=True):
     msg = st.session_state.get("load_msg")
     if msg:
         getattr(st, msg[0])(msg[1])
-    st.caption("Data from Yahoo Finance. Check it before relying on it, and adjust any input below.")
+    st.caption("Data from Yahoo Finance is unaudited. Verify key figures against the company's SEC filings before using them in any analysis.")
 
 company = st.sidebar.text_input("Company name", key="company")
 current_price = st.sidebar.number_input("Current share price ($)", 0.0, step=0.50, key="current_price")
@@ -513,8 +550,8 @@ if capex - da > 0.05:
 if r["tv_share_of_ev"] > 0.8:
     st.caption(f"⚠️ Terminal value is {pct(r['tv_share_of_ev'], 0)} of EV. The valuation leans heavily on the long-run assumptions.")
 
-tab1, tab_co, tab2, tab3, tab4 = st.tabs(
-    ["Valuation", "Company data", "Sensitivity", "Monte Carlo", "Methodology"])
+tab1, tab_rev, tab_co, tab2, tab3, tab4 = st.tabs(
+    ["Valuation", "Reverse DCF", "Company data", "Sensitivity", "Monte Carlo", "Methodology"])
 
 # ---------------------------------------------------------------- tab 1: valuation
 with tab1:
@@ -580,6 +617,89 @@ with tab1:
         mime="text/csv",
     )
 
+# ---------------------------------------------------------------- tab: reverse DCF
+with tab_rev:
+    st.subheader("Reverse DCF: what is the market pricing in?")
+    st.write("A normal DCF asks *what is the stock worth given my assumptions?* A reverse DCF asks the "
+             "opposite: *what would have to be true for today's share price to be fair?* It solves for "
+             "the one input that makes the model's value equal the market price, holding everything "
+             "else in the sidebar constant.")
+    if current_price <= 0:
+        st.info("Enter a current share price above $0 in the sidebar to run the reverse DCF.")
+    else:
+        imp_g = solve_input(a, "growth", current_price, -0.50, 1.00)
+        imp_m = solve_input(a, "ebit_margin", current_price, -0.50, 0.95)
+        avg_g = float(np.mean(growth_path(a)))
+
+        # Historical growth, if a company has been loaded
+        hist_cagr = None
+        d_ = st.session_state.get("company_data")
+        if d_ is not None:
+            revs = series(d_["income"], ROWS["revenue"])
+            revs = revs[revs > 0]
+            if len(revs) >= 2:
+                hist_cagr = (revs.iloc[-1] / revs.iloc[0]) ** (1 / (len(revs) - 1)) - 1
+
+        st.markdown(f"**Market price: {money(current_price, 2)}** · Your model's value: **{money(price, 2)}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### Implied revenue growth")
+            if imp_g is None:
+                st.error("No growth rate between −50% and +100% a year produces this price with the "
+                         "other inputs as they are. Check margins, net debt and share count.")
+            else:
+                st.metric(f"Growth needed every year for {a.years} years", pct(imp_g, 2))
+                st.caption(f"Your assumption averages {pct(avg_g, 2)} a year"
+                           + (f"; the company's historical revenue CAGR is {pct(hist_cagr, 2)}." if hist_cagr is not None else "."))
+                chk = value(replace(a, growth_start=imp_g, growth_end=imp_g))["price"]
+                st.caption(f"✅ Check: {pct(imp_g, 4)} growth plugged back into the model gives "
+                           f"{money(chk, 2)} vs. market {money(current_price, 2)}.")
+        with c2:
+            st.markdown("##### Implied EBIT margin")
+            if imp_m is None:
+                st.error("No EBIT margin between −50% and 95% produces this price with the other inputs as they are.")
+            else:
+                st.metric("Margin needed (with your growth path)", pct(imp_m, 2))
+                st.caption(f"Your assumption is {pct(a.ebit_margin, 2)}.")
+                chk = value(replace(a, ebit_margin=imp_m))["price"]
+                st.caption(f"✅ Check: {pct(imp_m, 4)} margin plugged back into the model gives "
+                           f"{money(chk, 2)} vs. market {money(current_price, 2)}.")
+
+        # Plain-English reading of the result
+        if imp_g is not None:
+            ref, ref_name = (hist_cagr, "its recent history") if hist_cagr is not None else (avg_g, "your assumption")
+            diff = imp_g - ref
+            if diff > 0.03:
+                st.warning(f"The market price implies **{pct(imp_g, 1)}** annual revenue growth, well above "
+                           f"{ref_name} ({pct(ref, 1)}). Investors are betting on faster growth, a higher margin, "
+                           "or a lower discount rate than this model uses.")
+            elif diff < -0.03:
+                st.success(f"The market price implies only **{pct(imp_g, 1)}** annual revenue growth, well below "
+                           f"{ref_name} ({pct(ref, 1)}). Expectations look modest relative to that benchmark.")
+            else:
+                st.info(f"The market price implies **{pct(imp_g, 1)}** annual revenue growth, close to "
+                        f"{ref_name} ({pct(ref, 1)}). The price looks consistent with that benchmark.")
+
+        # Value-vs-growth curve
+        if imp_g is not None:
+            lo_g, hi_g = min(imp_g, avg_g) - 0.10, max(imp_g, avg_g) + 0.10
+            xs = np.linspace(max(lo_g, -0.5), min(hi_g, 1.0), 61)
+            ys = [value(replace(a, growth_start=x, growth_end=x))["price"] for x in xs]
+            cfig = go.Figure()
+            cfig.add_scatter(x=xs * 100, y=ys, mode="lines", name="Model value")
+            cfig.add_hline(y=current_price, line_dash="dash", line_color="red",
+                           annotation_text="Market price", annotation_position="top left")
+            cfig.add_vline(x=imp_g * 100, line_dash="dot",
+                           annotation_text=f"Implied {imp_g * 100:.1f}%", annotation_position="bottom right")
+            cfig.update_layout(height=380, xaxis_title="Revenue growth, every projection year (%)",
+                               yaxis_title="Value per share ($)", showlegend=False, margin=dict(t=20))
+            st.plotly_chart(cfig)
+            st.caption("Where the curve crosses the market price is the growth rate the market is paying for.")
+
+        st.caption("How it's solved: the app scans the range for the point where model value minus market "
+                   "price changes sign, then narrows it down by bisection to a precision of 0.0000001%. "
+                   "Only one input changes at a time. Terminal growth, WACC and everything else stay as set.")
+
 # ---------------------------------------------------------------- tab: company data
 with tab_co:
     d = st.session_state.get("company_data")
@@ -644,6 +764,9 @@ with tab_co:
 
         st.subheader("Financial statements")
         st.caption(f"Annual, in millions of {fin_cur or 'USD'}. Source: Yahoo Finance.")
+        st.warning("These figures come from a free, unaudited data feed and can contain errors, "
+                   "reclassifications or restatements. Before using them in any analysis, verify them against "
+                   "the company's 10-K / 10-Q on [SEC EDGAR](https://www.sec.gov/edgar/search/).", icon="🔎")
         stmt_name = st.radio("Statement", ["Income statement", "Balance sheet", "Cash flow"],
                              horizontal=True, label_visibility="collapsed")
         stmt = {"Income statement": d["income"], "Balance sheet": d["balance"],
@@ -828,9 +951,13 @@ tabs are included. This app is an educational tool, not investment advice.
          0.07, test_wacc),
         ("Exit multiple: EBITDA 100 × 8x = TV 800", 800.0,
          value(replace(flat, terminal_method="Exit multiple", exit_multiple=8))["terminal_value"]),
+        # Reverse DCF: 1 year, no tax/reinvestment -> price = 500 × (1 + g); a $550 price needs g = 10%
+        ("Reverse DCF: price = 500 × (1 + g), market $550 → implied growth 10%", 0.10,
+         solve_input(replace(flat, years=1, ebit_margin=0.5, shares=1, base_revenue=100),
+                     "growth", 550.0, -0.5, 1.0)),
     ]
     for label, expected, actual in checks:
-        ok = abs(expected - actual) < 1e-6
+        ok = actual is not None and abs(expected - actual) < 1e-6
         st.write(f"{'✅' if ok else '❌'} {label}  (app result: {actual:,.4f})")
 
     st.caption("Built for FINAN 623 using AI-assisted coding (Claude).")

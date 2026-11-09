@@ -101,6 +101,21 @@ Manual check of loaded inputs (example): EBIT margin = operating income ÷ reven
 |capital expenditure| ÷ revenue; net debt = total debt − cash. Compare these to the Company data
 tab's statements with a calculator.
 
+### Reverse DCF verification (25 automated checks, all passed)
+
+| Test | Expected | Actual | Status |
+|---|---|---|---|
+| Hand case: 1 yr, no tax/reinvestment, WACC 10%, g∞ 0% → price = 500 × (1 + g); market $550 | g = 10% exactly | 10.0000000% | ✓ PASS |
+| Hand case: same, price = 1,000 × margin; market $420 | margin = 42% exactly | 42.0000000% | ✓ PASS |
+| Round trip: set growth to −5%, 0%, 3%, 8%, 15%, 25% → compute price → solve back | Original growth | Recovered to 7 decimal places | ✓ PASS |
+| Round trip: margins 5%, 12%, 20%, 35% | Original margin | Recovered to 7 decimal places | ✓ PASS |
+| Plug-back: solve at $10, $25, $27.31, $60, then re-run model | Equals market price | Matches to $0.0001 | ✓ PASS |
+| Exit-multiple method plug-back at $40 | $40.00 | $40.0000 | ✓ PASS |
+| Impossible target ($1,000,000 price; net debt > any value) | "No solution" message, not a wrong number | Returns no solution | ✓ PASS |
+| Independent brute-force grid search at $25 | Agrees with bisection | 6.45% grid vs 6.4414% bisection (within grid step) | ✓ PASS |
+
+The Reverse DCF hand case also runs live in the Methodology tab's self-check.
+
 ## 4. Edge-case testing
 
 | Test case | Input | Expected | Actual | Status |
