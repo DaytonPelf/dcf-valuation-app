@@ -81,7 +81,7 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
 | Valuation verdict | Market price $10 / $25 / $60 | Undervalued / fair / overvalued | Correct for all three | ✓ PASS |
 | Sensitivity heat map | Center cell | Equals base-case price | Matches | ✓ PASS |
 | Tornado chart | Bars sorted | Largest impact on top | Sorted | ✓ PASS |
-| Monte Carlo | 10,000 sims | Median near base case | Median $27.37 vs base $27.31 | ✓ PASS |
+| Monte Carlo | 10,000 sims | Median near base case | Median $27.37 vs base $27.31; 5th–95th pct $17.45–$42.65 (same on deployed app) | ✓ PASS |
 | CSV download | Click button | CSV of projection table | Downloaded | ✓ PASS |
 | 10-year projection | Slider to 10 | Table shows 10 years | 10 years | ✓ PASS |
 
@@ -110,6 +110,13 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
      negative-equity error now appears instead.
 2. **Deprecated chart argument.** `use_container_width=True` is deprecated in newer Streamlit versions.
    - Severity: Low. Fix: removed the argument (charts fill the container by default).
+3. **Sensitivity heat map axis labels wrong on the deployed app.** Plotly converted labels like
+   "8.95%" into plain numbers, so the WACC axis read 8, 8.5, 9… instead of 7.95%, 8.45%, 8.95%…
+   The center cell also showed $27.30 instead of $27.31 because the WACC was rounded.
+   - Found during post-deployment testing. Severity: Medium (misleading chart).
+   - Fix: forced both axes to categories and removed the rounding. The center cell now equals the base case.
+4. **Overlapping chart labels.** The "Market price" and "Base case" labels on the Monte Carlo
+   histogram sat on top of each other. Severity: Low. Fix: placed them on opposite sides of their lines.
 
 ## 6. Verification checklist
 
@@ -120,7 +127,7 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
 - [x] I verified error handling works
 - [x] I asked AI to review its own code
 - [ ] I have read and understood every line of code
-- [ ] App loads on Streamlit Cloud and all features work on the deployed version
+- [x] App loads on Streamlit Cloud and all features work on the deployed version
 - [ ] Tested from a different device/browser
 
 **Overall status:** Ready to deploy

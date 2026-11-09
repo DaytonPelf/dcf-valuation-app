@@ -348,13 +348,14 @@ with tab2:
     st.subheader("Implied share price sensitivity")
     step = st.select_slider("WACC step", options=[0.25, 0.5, 1.0], value=0.5,
                             format_func=lambda v: f"{v}%")
-    waccs = [round(wacc + k * step / 100, 4) for k in range(-2, 3)]
+    # Keep full precision so the center cell equals the base case exactly
+    waccs = [wacc + k * step / 100 for k in range(-2, 3)]
     if method == "Perpetuity growth":
-        seconds = [round(tg + k * 0.0025, 4) for k in range(-2, 3)]
+        seconds = [tg + k * 0.0025 for k in range(-2, 3)]
         col_labels = [pct(s, 2) for s in seconds]
         col_title = "Terminal growth"
     else:
-        seconds = [round(exit_mult + k * 1.0, 2) for k in range(-2, 3)]
+        seconds = [exit_mult + k * 1.0 for k in range(-2, 3)]
         col_labels = [f"{s:.1f}x" for s in seconds]
         col_title = "Exit multiple"
 
@@ -366,8 +367,10 @@ with tab2:
         texttemplate="%{text}", hovertemplate="WACC %{y}<br>" + col_title + " %{x}<br>%{text}<extra></extra>",
         colorbar=dict(title="$/share"),
     ))
+    # type="category" stops Plotly from converting labels like "8.95%" into plain numbers
     hm.update_layout(xaxis_title=col_title, yaxis_title="WACC", height=430,
-                     yaxis=dict(autorange="reversed"), margin=dict(t=20))
+                     xaxis=dict(type="category"),
+                     yaxis=dict(type="category", autorange="reversed"), margin=dict(t=20))
     st.plotly_chart(hm)
     st.caption("Green cells are above the current market price and red cells are below it. "
                "The center cell is your base case.")
@@ -396,9 +399,9 @@ with tab2:
     rows.sort(key=lambda t: abs(t[2] - t[1]))
     tor = go.Figure()
     tor.add_bar(y=[t[0] for t in rows], x=[t[1] - price for t in rows], base=price,
-                orientation="h", name="Low case")
+                orientation="h", name="Input lowered")
     tor.add_bar(y=[t[0] for t in rows], x=[t[2] - price for t in rows], base=price,
-                orientation="h", name="High case")
+                orientation="h", name="Input raised")
     tor.add_vline(x=price, line_dash="dash")
     tor.update_layout(barmode="overlay", height=360, xaxis_title="Implied share price ($)",
                       legend=dict(orientation="h", y=-0.25), margin=dict(t=20))
@@ -424,14 +427,15 @@ with tab3:
     k1.metric("Median value", money(p50, 2))
     k2.metric("5th percentile", money(p5, 2))
     k3.metric("95th percentile", money(p95, 2))
-    k4.metric("P(value > market price)", "n/a" if np.isnan(prob_up) else pct(prob_up, 0))
+    k4.metric("Chance undervalued", "n/a" if np.isnan(prob_up) else pct(prob_up, 0))
 
     lo_clip, hi_clip = np.percentile(sims, [0.5, 99.5])
     hist = go.Figure(go.Histogram(x=sims[(sims >= lo_clip) & (sims <= hi_clip)], nbinsx=60))
     if current_price > 0:
         hist.add_vline(x=current_price, line_dash="dash", line_color="red",
-                       annotation_text="Market price")
-    hist.add_vline(x=price, line_dash="dot", annotation_text="Base case")
+                       annotation_text="Market price", annotation_position="top left")
+    hist.add_vline(x=price, line_dash="dot", annotation_text="Base case",
+                   annotation_position="top right")
     hist.update_layout(xaxis_title="Implied share price ($)", yaxis_title="Simulations",
                        height=400, margin=dict(t=30), showlegend=False)
     st.plotly_chart(hist)

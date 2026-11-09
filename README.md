@@ -1,6 +1,6 @@
 # 📈 DCF Valuation Studio
 
-**Live app:** https://YOUR-APP-NAME.streamlit.app  ← *replace after deploying*
+**Live app:** https://dcf-valuation-app-9yddu6ndlqf9avvzwq4mny.streamlit.app/
 
 A Streamlit web app that estimates a company's **intrinsic value per share** with a
 discounted cash flow (DCF) model and then stress-tests that estimate. Built for
