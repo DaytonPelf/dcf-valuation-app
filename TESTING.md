@@ -126,8 +126,8 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
 - [x] I tested edge cases (Section 4)
 - [x] I verified error handling works
 - [x] I asked AI to review its own code
-- [ ] I have read and understood every line of code
+- [x] I have read and understood every line of code
 - [x] App loads on Streamlit Cloud and all features work on the deployed version
-- [ ] Tested from a different device/browser
+- [x] Tested from a different device/browser
 
 **Overall status:** Ready to deploy
