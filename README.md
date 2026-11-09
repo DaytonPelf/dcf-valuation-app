@@ -12,9 +12,22 @@ number is. This app makes the model interactive. Every assumption is a slider or
 results update instantly, and three tools show how much the answer depends on those
 assumptions: a sensitivity table, a tornado chart and a Monte Carlo simulation.
 
+## Live company data
+Type a ticker (e.g. `AAPL`) or a company name (e.g. `Microsoft`) in the sidebar and click
+**Load company**. The app pulls data from Yahoo Finance (via the `yfinance` library) and:
+- fills in the DCF inputs: price, revenue, historical growth, EBIT margin, tax rate, D&A, CapEx,
+  beta, net debt, shares, debt weight, cost of debt, and the 10-year Treasury yield as the risk-free rate
+- shows a **Company data** tab with the profile, key stats (market cap, P/E, EV/EBITDA, dividend yield),
+  a 1–5 year price chart, the income statement, balance sheet and cash flow statement, and a table
+  showing exactly which inputs were loaded and where each came from
+
+Forecast judgment calls (growth fade, NWC, equity risk premium, terminal assumptions) stay manual.
+If Yahoo Finance is unavailable, the app shows a message and you can still enter inputs by hand.
+
 ## Features
 | Tab | What it does |
 |---|---|
+| **Company data** | Profile, key stats, price chart, financial statements, and the source of every loaded input |
 | **Valuation** | 5–10 year unlevered FCF projection, value bridge waterfall (PV of FCF + PV of TV − net debt = equity), implied price vs. market price, CSV download |
 | **Sensitivity** | WACC × terminal growth (or exit multiple) heat map; tornado chart ranking which input moves value most |
 | **Monte Carlo** | 1,000–25,000 simulations shocking growth, margin, WACC and terminal growth; shows 5th/50th/95th percentile values and the probability the stock is undervalued |

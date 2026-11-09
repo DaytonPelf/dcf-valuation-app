@@ -2,3 +2,4 @@ streamlit>=1.40
 pandas
 numpy
 plotly
+yfinance>=0.2.54

@@ -181,46 +181,272 @@ def money(x, d=1):
     return f"${x:,.{d}f}"
 
 
+# ---------------------------------------------------------------- live company data (Yahoo Finance)
+# Statement row names Yahoo uses. Several names are tried because they vary by company.
+ROWS = {
+    "revenue": ["Total Revenue", "Operating Revenue"],
+    "ebit": ["Operating Income", "EBIT"],
+    "tax_rate": ["Tax Rate For Calcs"],
+    "da": ["Depreciation And Amortization", "Reconciled Depreciation",
+           "Depreciation Amortization Depletion"],
+    "capex": ["Capital Expenditure"],
+    "debt": ["Total Debt"],
+    "cash": ["Cash Cash Equivalents And Short Term Investments", "Cash And Cash Equivalents"],
+    "shares": ["Ordinary Shares Number", "Share Issued"],
+}
+
+
+def latest(df, names):
+    """Most recent non-missing value of the first matching row in a statement (or None)."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    for n in names:
+        if n in df.index:
+            s = pd.to_numeric(df.loc[n], errors="coerce").dropna()
+            if not s.empty:
+                return float(s.sort_index().iloc[-1])
+    return None
+
+
+def series(df, names):
+    """A statement row as an oldest-to-newest series (or an empty series)."""
+    if df is None or getattr(df, "empty", True):
+        return pd.Series(dtype=float)
+    for n in names:
+        if n in df.index:
+            return pd.to_numeric(df.loc[n], errors="coerce").dropna().sort_index()
+    return pd.Series(dtype=float)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def resolve_symbol(query: str) -> str:
+    """Turn a ticker or company name into a ticker symbol using Yahoo's search."""
+    import yfinance as yf
+    q = query.strip()
+    try:
+        quotes = yf.Search(q, max_results=8).quotes
+        equities = [x for x in quotes if x.get("quoteType") == "EQUITY"]
+        exact = [x for x in equities if x.get("symbol", "").upper() == q.upper()]
+        if exact:
+            return exact[0]["symbol"]
+        if equities:
+            return equities[0]["symbol"]
+    except Exception:
+        pass
+    return q.upper()  # fall back to treating the text as a ticker
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_company(symbol: str) -> dict:
+    """Download profile, statements and price history for one ticker (cached for 1 hour)."""
+    import yfinance as yf
+    t = yf.Ticker(symbol)
+    info = t.info or {}
+    data = {
+        "symbol": symbol,
+        "info": info,
+        "income": t.income_stmt,
+        "balance": t.balance_sheet,
+        "cashflow": t.cashflow,
+        "history": t.history(period="5y")[["Close"]],
+    }
+    try:  # 10-year US Treasury yield (^TNX is quoted in percent, e.g. 4.3)
+        tnx = yf.Ticker("^TNX").history(period="5d")["Close"].dropna()
+        data["rf"] = float(tnx.iloc[-1]) / 100 if not tnx.empty else None
+    except Exception:
+        data["rf"] = None
+    return data
+
+
+def clamp(x, lo, hi):
+    return float(min(max(x, lo), hi))
+
+
+def model_inputs(d: dict) -> tuple[dict, list]:
+    """Translate raw company data into DCF inputs. Returns (values, notes on where each came from)."""
+    info, inc, bal, cf = d["info"], d["income"], d["balance"], d["cashflow"]
+    vals, notes = {}, []
+
+    def note(field, value, source):
+        notes.append({"Input": field, "Value": value, "Source": source})
+
+    name = info.get("longName") or info.get("shortName") or d["symbol"]
+    vals["company"] = f"{name} ({d['symbol']})"
+
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+    if not price and not d["history"].empty:
+        price = float(d["history"]["Close"].iloc[-1])
+    if price:
+        vals["current_price"] = float(price)
+        note("Current share price", money(price, 2), "Latest market price")
+
+    rev = latest(inc, ROWS["revenue"])
+    if rev and rev > 0:
+        vals["base_revenue"] = max(rev / 1e6, 1.0)
+        note("Last-year revenue", money(rev / 1e6, 0) + "M", "Income statement, latest fiscal year")
+
+        revs = series(inc, ROWS["revenue"])
+        revs = revs[revs > 0]
+        if len(revs) >= 2:
+            n = len(revs) - 1
+            cagr = (revs.iloc[-1] / revs.iloc[0]) ** (1 / n) - 1
+            vals["g_start"] = clamp(cagr * 100, -20, 50)
+            vals["g_end"] = clamp(min(cagr * 100, 4.0), -20, 50)
+            note("Year-1 revenue growth", pct(cagr), f"{n}-year historical revenue CAGR")
+            note("Final-year revenue growth", pct(vals["g_end"] / 100),
+                 "Lower of historical CAGR and 4% (assumed fade)")
+
+        ebit = latest(inc, ROWS["ebit"])
+        if ebit is not None:
+            vals["margin"] = clamp(ebit / rev * 100, -50, 90)
+            note("EBIT margin", pct(ebit / rev), "Operating income ÷ revenue")
+        da = latest(cf, ROWS["da"])
+        if da is None:
+            da = latest(inc, ["Reconciled Depreciation"])
+        if da is not None:
+            vals["da"] = clamp(abs(da) / rev * 100, 0, 50)
+            note("D&A % of revenue", pct(abs(da) / rev), "Cash flow statement")
+        capex = latest(cf, ROWS["capex"])
+        if capex is not None:
+            vals["capex"] = clamp(abs(capex) / rev * 100, 0, 50)
+            note("CapEx % of revenue", pct(abs(capex) / rev), "Cash flow statement")
+
+    tr = latest(inc, ROWS["tax_rate"])
+    if tr is not None and 0 <= tr <= 0.6:
+        vals["tax"] = tr * 100
+        note("Tax rate", pct(tr), "Effective tax rate (income statement)")
+
+    beta = info.get("beta")
+    if beta is not None and 0 < beta < 4:
+        vals["beta"] = float(beta)
+        note("Equity beta", f"{beta:.2f}", "Yahoo Finance (5-year monthly)")
+
+    if d.get("rf"):
+        vals["rf"] = clamp(d["rf"] * 100, 0, 15)
+        note("Risk-free rate", pct(d["rf"], 2), "10-year US Treasury yield (^TNX)")
+
+    debt = info.get("totalDebt") or latest(bal, ROWS["debt"]) or 0.0
+    cash = info.get("totalCash") or latest(bal, ROWS["cash"]) or 0.0
+    vals["net_debt"] = (debt - cash) / 1e6
+    note("Net debt", money((debt - cash) / 1e6, 0) + "M",
+         f"Total debt {money(debt / 1e6, 0)}M − cash {money(cash / 1e6, 0)}M")
+
+    shares = info.get("sharesOutstanding") or latest(bal, ROWS["shares"])
+    if shares:
+        vals["shares"] = max(shares / 1e6, 0.01)
+        note("Shares outstanding", f"{shares / 1e6:,.1f}M", "Yahoo Finance")
+
+    interest = latest(inc, ["Interest Expense", "Interest Expense Non Operating"])
+    if interest and debt and debt > 0:
+        kd_est = abs(interest) / debt
+        if 0.01 <= kd_est <= 0.20:
+            vals["kd"] = kd_est * 100
+            note("Pre-tax cost of debt", pct(kd_est), "Interest expense ÷ total debt")
+
+    mcap = info.get("marketCap") or (price * shares if price and shares else None)
+    if mcap and debt is not None:
+        vals["wd"] = clamp(debt / (debt + mcap) * 100, 0, 95)
+        note("Debt / (Debt + Equity)", pct(debt / (debt + mcap)), "Market values: total debt and market cap")
+
+    return vals, notes
+
+
+# Default inputs (the "Example Co." case). Widgets read their values from session state,
+# which lets the "Load company" button overwrite them.
+DEFAULTS = {
+    "company": "Example Co.", "current_price": 25.0, "base_revenue": 1000.0, "years": 5,
+    "g_start": 12.0, "g_end": 4.0, "margin": 20.0, "tax": 21.0, "da": 4.0, "capex": 5.0,
+    "nwc": 10.0, "rf": 4.3, "beta": 1.1, "erp": 5.5, "kd": 6.0, "wd": 25.0, "wacc_direct": 9.0,
+    "tg": 2.5, "exit_mult": 12.0, "net_debt": 200.0, "shares": 100.0,
+}
+for k, v in DEFAULTS.items():
+    st.session_state.setdefault(k, v)
+st.session_state.setdefault("company_data", None)
+
+
+def load_company():
+    """Button callback: look up the company and copy its numbers into the inputs."""
+    query = st.session_state.get("query", "").strip()
+    st.session_state["load_msg"] = None
+    if not query:
+        st.session_state["load_msg"] = ("warning", "Type a ticker or company name first.")
+        return
+    try:
+        symbol = resolve_symbol(query)
+        d = fetch_company(symbol)
+        vals, notes = model_inputs(d)
+        if "base_revenue" not in vals:
+            st.session_state["load_msg"] = (
+                "error", f"Couldn't find financial statements for '{query}'. Check the ticker and try again.")
+            return
+        for k, v in vals.items():
+            st.session_state[k] = v
+        st.session_state["company_data"] = d
+        st.session_state["load_notes"] = notes
+        st.session_state["load_msg"] = ("success", f"Loaded {vals['company']}.")
+    except Exception as e:  # network problems, rate limits, unknown tickers
+        st.session_state["load_msg"] = (
+            "error", f"Couldn't load data for '{query}' ({type(e).__name__}). Yahoo Finance may be "
+                     "busy, so wait a minute and try again, or enter the inputs by hand.")
+
+
+def reset_inputs():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
+    st.session_state["company_data"] = None
+    st.session_state["load_msg"] = None
+
+
 # ---------------------------------------------------------------- sidebar inputs
 st.sidebar.title("Assumptions")
-company = st.sidebar.text_input("Company name", "Example Co.")
-current_price = st.sidebar.number_input("Current share price ($)", 0.0, value=25.00, step=0.50)
+with st.sidebar.container(border=True):
+    st.text_input("Look up a company", key="query", placeholder="Ticker or name, e.g. AAPL or Microsoft")
+    b1, b2 = st.columns(2)
+    b1.button("Load company", on_click=load_company, type="primary", use_container_width=True)
+    b2.button("Reset", on_click=reset_inputs, use_container_width=True)
+    msg = st.session_state.get("load_msg")
+    if msg:
+        getattr(st, msg[0])(msg[1])
+    st.caption("Data from Yahoo Finance. Check it before relying on it, and adjust any input below.")
+
+company = st.sidebar.text_input("Company name", key="company")
+current_price = st.sidebar.number_input("Current share price ($)", 0.0, step=0.50, key="current_price")
 
 with st.sidebar.expander("Revenue & operations", expanded=True):
-    base_revenue = st.number_input("Last-year revenue ($M)", 1.0, value=1000.0, step=50.0)
-    years = st.slider("Projection years", 3, 10, 5)
-    g_start = st.number_input("Year-1 revenue growth (%)", -50.0, 100.0, 12.0, 0.5) / 100
-    g_end = st.number_input("Final-year revenue growth (%)", -50.0, 100.0, 4.0, 0.5) / 100
-    margin = st.number_input("EBIT margin (%)", -50.0, 90.0, 20.0, 0.5) / 100
-    tax = st.number_input("Tax rate (%)", 0.0, 60.0, 21.0, 0.5) / 100
+    base_revenue = st.number_input("Last-year revenue ($M)", 1.0, step=50.0, key="base_revenue")
+    years = st.slider("Projection years", 3, 10, key="years")
+    g_start = st.number_input("Year-1 revenue growth (%)", -50.0, 100.0, step=0.5, key="g_start") / 100
+    g_end = st.number_input("Final-year revenue growth (%)", -50.0, 100.0, step=0.5, key="g_end") / 100
+    margin = st.number_input("EBIT margin (%)", -50.0, 90.0, step=0.5, key="margin") / 100
+    tax = st.number_input("Tax rate (%)", 0.0, 60.0, step=0.5, key="tax") / 100
 
 with st.sidebar.expander("Reinvestment"):
-    da = st.number_input("D&A (% of revenue)", 0.0, 50.0, 4.0, 0.5) / 100
-    capex = st.number_input("CapEx (% of revenue)", 0.0, 50.0, 5.0, 0.5) / 100
-    nwc = st.number_input("Net working capital (% of revenue change)", -50.0, 100.0, 10.0, 1.0) / 100
+    da = st.number_input("D&A (% of revenue)", 0.0, 50.0, step=0.5, key="da") / 100
+    capex = st.number_input("CapEx (% of revenue)", 0.0, 50.0, step=0.5, key="capex") / 100
+    nwc = st.number_input("Net working capital (% of revenue change)", -50.0, 100.0, step=1.0, key="nwc") / 100
 
 with st.sidebar.expander("Discount rate (WACC)", expanded=True):
     use_capm = st.toggle("Build WACC with CAPM", value=True)
     if use_capm:
-        rf = st.number_input("Risk-free rate (%)", 0.0, 15.0, 4.3, 0.1) / 100
-        beta = st.number_input("Equity beta", 0.0, 4.0, 1.1, 0.05)
-        erp = st.number_input("Equity risk premium (%)", 0.0, 15.0, 5.5, 0.1) / 100
-        kd = st.number_input("Pre-tax cost of debt (%)", 0.0, 20.0, 6.0, 0.1) / 100
-        wd = st.number_input("Debt / (Debt + Equity) (%)", 0.0, 95.0, 25.0, 1.0) / 100
+        rf = st.number_input("Risk-free rate (%)", 0.0, 15.0, step=0.1, key="rf") / 100
+        beta = st.number_input("Equity beta", 0.0, 4.0, step=0.05, key="beta")
+        erp = st.number_input("Equity risk premium (%)", 0.0, 15.0, step=0.1, key="erp") / 100
+        kd = st.number_input("Pre-tax cost of debt (%)", 0.0, 20.0, step=0.1, key="kd") / 100
+        wd = st.number_input("Debt / (Debt + Equity) (%)", 0.0, 95.0, step=1.0, key="wd") / 100
         ke, wacc = capm_wacc(rf, beta, erp, kd, tax, wd)
         st.caption(f"Cost of equity **{pct(ke, 2)}** · WACC **{pct(wacc, 2)}**")
     else:
-        wacc = st.number_input("WACC (%)", 1.0, 30.0, 9.0, 0.1) / 100
+        wacc = st.number_input("WACC (%)", 1.0, 30.0, step=0.1, key="wacc_direct") / 100
 
 with st.sidebar.expander("Terminal value", expanded=True):
     method = st.radio("Method", ["Perpetuity growth", "Exit multiple"], horizontal=True)
-    tg = st.number_input("Terminal growth (%)", -5.0, 10.0, 2.5, 0.1) / 100
-    exit_mult = st.number_input("Exit EV/EBITDA multiple (x)", 0.0, 50.0, 12.0, 0.5)
+    tg = st.number_input("Terminal growth (%)", -5.0, 10.0, step=0.1, key="tg") / 100
+    exit_mult = st.number_input("Exit EV/EBITDA multiple (x)", 0.0, 50.0, step=0.5, key="exit_mult")
     mid_year = st.checkbox("Mid-year discounting convention", value=True)
 
 with st.sidebar.expander("Equity bridge"):
-    net_debt = st.number_input("Net debt ($M, debt minus cash)", value=200.0, step=25.0)
-    shares = st.number_input("Diluted shares outstanding (M)", 0.01, value=100.0, step=5.0)
+    net_debt = st.number_input("Net debt ($M, debt minus cash)", step=25.0, key="net_debt")
+    shares = st.number_input("Diluted shares outstanding (M)", 0.01, step=5.0, key="shares")
 
 a = Assumptions(
     base_revenue=base_revenue, growth_start=g_start, growth_end=g_end, years=years,
@@ -234,7 +460,8 @@ st.title("📈 DCF Valuation Studio")
 st.write(
     f"Estimate the intrinsic value per share of **{company}** using an unlevered "
     "free-cash-flow DCF, then stress-test it with sensitivity tables and a Monte Carlo "
-    "simulation. Change the assumptions in the sidebar. Everything updates instantly."
+    "simulation. Look up a real company or type your own assumptions in the sidebar. "
+    "Everything updates instantly."
 )
 
 try:
@@ -277,7 +504,8 @@ if tg > 0.04 and method == "Perpetuity growth":
 if r["tv_share_of_ev"] > 0.8:
     st.caption(f"⚠️ Terminal value is {pct(r['tv_share_of_ev'], 0)} of EV. The valuation leans heavily on the long-run assumptions.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Valuation", "Sensitivity", "Monte Carlo", "Methodology"])
+tab1, tab_co, tab2, tab3, tab4 = st.tabs(
+    ["Valuation", "Company data", "Sensitivity", "Monte Carlo", "Methodology"])
 
 # ---------------------------------------------------------------- tab 1: valuation
 with tab1:
@@ -342,6 +570,111 @@ with tab1:
         file_name=f"{company.replace(' ', '_')}_dcf_projection.csv",
         mime="text/csv",
     )
+
+# ---------------------------------------------------------------- tab: company data
+with tab_co:
+    d = st.session_state.get("company_data")
+    if d is None:
+        st.info("Type a ticker (e.g. **AAPL**) or a company name (e.g. **Microsoft**) in the sidebar "
+                "and click **Load company**. This tab will show the company's profile, key statistics, "
+                "price history and financial statements, and the DCF inputs will fill in automatically.")
+    else:
+        info = d["info"]
+        st.subheader(info.get("longName") or d["symbol"])
+        facts = [info.get("sector"), info.get("industry"), info.get("country")]
+        st.caption(" · ".join(str(f) for f in facts if f) + (f" · {info['website']}" if info.get("website") else ""))
+
+        if info.get("sector") == "Financial Services":
+            st.warning("⚠️ Banks and insurers don't fit a free-cash-flow DCF well, because debt is part of "
+                       "their operations. Treat this valuation with extra caution.")
+        fin_cur, px_cur = info.get("financialCurrency"), info.get("currency")
+        if fin_cur and px_cur and fin_cur != px_cur:
+            st.warning(f"⚠️ Financial statements are reported in **{fin_cur}** but the share price is in "
+                       f"**{px_cur}**. Convert revenue and net debt to {px_cur} before trusting the value per share.")
+
+        if info.get("longBusinessSummary"):
+            with st.expander("Business description"):
+                st.write(info["longBusinessSummary"])
+
+        def fmt_big(x):
+            if not x:
+                return "n/a"
+            for div, suf in [(1e12, "T"), (1e9, "B"), (1e6, "M")]:
+                if abs(x) >= div:
+                    return f"${x / div:,.2f}{suf}"
+            return f"${x:,.0f}"
+
+        def fmt_x(x):
+            return f"{x:.1f}x" if isinstance(x, (int, float)) and x > 0 else "n/a"
+
+        px = info.get("currentPrice") or info.get("regularMarketPrice")
+        div_rate = info.get("dividendRate")
+        k = st.columns(4)
+        k[0].metric("Share price", money(px, 2) if px else "n/a")
+        k[1].metric("Market cap", fmt_big(info.get("marketCap")))
+        k[2].metric("Enterprise value", fmt_big(info.get("enterpriseValue")))
+        k[3].metric("Beta", f"{info['beta']:.2f}" if info.get("beta") else "n/a")
+        k = st.columns(4)
+        k[0].metric("Trailing P/E", fmt_x(info.get("trailingPE")))
+        k[1].metric("Forward P/E", fmt_x(info.get("forwardPE")))
+        k[2].metric("EV / EBITDA", fmt_x(info.get("enterpriseToEbitda")))
+        k[3].metric("Dividend yield", pct(div_rate / px, 2) if div_rate and px else "n/a")
+        lo52, hi52 = info.get("fiftyTwoWeekLow"), info.get("fiftyTwoWeekHigh")
+        if lo52 and hi52:
+            st.caption(f"52-week range: {money(lo52, 2)} – {money(hi52, 2)}")
+
+        hist = d["history"]
+        if not hist.empty:
+            period = st.radio("Price history", ["1Y", "3Y", "5Y"], index=2, horizontal=True)
+            days = {"1Y": 365, "3Y": 3 * 365, "5Y": 5 * 365}[period]
+            h = hist[hist.index >= hist.index.max() - pd.Timedelta(days=days)]
+            pfig = go.Figure(go.Scatter(x=h.index, y=h["Close"], mode="lines", name="Close"))
+            pfig.update_layout(height=320, yaxis_title=f"Price ({px_cur or 'USD'})",
+                               margin=dict(t=10, b=10), showlegend=False)
+            st.plotly_chart(pfig)
+
+        st.subheader("Financial statements")
+        st.caption(f"Annual, in millions of {fin_cur or 'USD'}. Source: Yahoo Finance.")
+        stmt_name = st.radio("Statement", ["Income statement", "Balance sheet", "Cash flow"],
+                             horizontal=True, label_visibility="collapsed")
+        stmt = {"Income statement": d["income"], "Balance sheet": d["balance"],
+                "Cash flow": d["cashflow"]}[stmt_name]
+        key_rows = {
+            "Income statement": ["Total Revenue", "Cost Of Revenue", "Gross Profit", "Operating Expense",
+                                 "Operating Income", "EBITDA", "Interest Expense", "Pretax Income",
+                                 "Tax Provision", "Net Income", "Diluted EPS"],
+            "Balance sheet": ["Cash Cash Equivalents And Short Term Investments", "Current Assets",
+                              "Total Assets", "Current Liabilities", "Total Debt",
+                              "Total Liabilities Net Minority Interest", "Stockholders Equity",
+                              "Ordinary Shares Number"],
+            "Cash flow": ["Operating Cash Flow", "Depreciation And Amortization", "Capital Expenditure",
+                          "Free Cash Flow", "Repurchase Of Capital Stock", "Cash Dividends Paid"],
+        }[stmt_name]
+        if stmt is None or stmt.empty:
+            st.write("Not available for this company.")
+        else:
+            show_all = st.checkbox("Show all line items")
+            rows = list(stmt.index) if show_all else [r for r in key_rows if r in stmt.index]
+            tbl = stmt.loc[rows].apply(pd.to_numeric, errors="coerce")
+            tbl = tbl[sorted(tbl.columns)]  # oldest -> newest, left to right
+            tbl = tbl.dropna(axis=1, how="all")
+            tbl.columns = [c.strftime("FY %Y") if hasattr(c, "strftime") else str(c) for c in tbl.columns]
+            per_share = {"Diluted EPS", "Basic EPS", "Tax Rate For Calcs"}
+            shown = tbl.astype(object)
+            for r_ in tbl.index:
+                vals_ = tbl.loc[r_]
+                if r_ in per_share:
+                    shown.loc[r_] = ["" if pd.isna(v) else f"{v:,.2f}" for v in vals_]
+                else:
+                    shown.loc[r_] = ["" if pd.isna(v) else f"{v / 1e6:,.0f}" for v in vals_]
+            st.dataframe(shown)
+
+        notes = st.session_state.get("load_notes") or []
+        if notes:
+            st.subheader("What was loaded into the model")
+            st.dataframe(pd.DataFrame(notes), hide_index=True)
+            st.caption("Projection years, revenue fade, NWC, equity risk premium and terminal "
+                       "assumptions are not pulled from data (cost of debt is filled only when interest expense is reported). They are your judgment calls, so review them in the sidebar.")
 
 # ---------------------------------------------------------------- tab 2: sensitivity
 with tab2:

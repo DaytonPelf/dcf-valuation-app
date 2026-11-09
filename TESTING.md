@@ -85,6 +85,20 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
 | CSV download | Click button | CSV of projection table | Downloaded | ✓ PASS |
 | 10-year projection | Slider to 10 | Table shows 10 years | 10 years | ✓ PASS |
 
+### Live company data feature
+
+| Feature | Test | Expected | Actual | Status |
+|---|---|---|---|---|
+| Lookup by company name | "apple" | Resolves to AAPL and fills inputs | Filled with Apple Inc. (AAPL) | ✓ PASS |
+| Loaded values traceable | Check "What was loaded into the model" table | Each input lists its source | Shown | ✓ PASS |
+| Unknown ticker | "ZZZZZ" | Error message, inputs unchanged | "Couldn't find financial statements" | ✓ PASS |
+| Data source down | Simulated connection error | Friendly error, manual entry still works | Message shown, app still runs | ✓ PASS |
+| Reset button | Click Reset | Back to Example Co. defaults | Restored | ✓ PASS |
+
+Manual check of loaded inputs (example): EBIT margin = operating income ÷ revenue; CapEx % =
+|capital expenditure| ÷ revenue; net debt = total debt − cash. Compare these to the Company data
+tab's statements with a calculator.
+
 ## 4. Edge-case testing
 
 | Test case | Input | Expected | Actual | Status |
