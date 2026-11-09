@@ -379,7 +379,7 @@ def load_company():
             st.session_state["load_msg"] = (
                 "error", f"Couldn't find financial statements for '{query}'. Check the ticker and try again.")
             return
-        for k, v in vals.items():
+        for k, v in {**DEFAULTS, **vals}.items():  # defaults first, so nothing carries over
             st.session_state[k] = v
         st.session_state["company_data"] = d
         st.session_state["load_notes"] = notes
@@ -400,10 +400,12 @@ def reset_inputs():
 # ---------------------------------------------------------------- sidebar inputs
 st.sidebar.title("Assumptions")
 with st.sidebar.container(border=True):
-    st.text_input("Look up a company", key="query", placeholder="Ticker or name, e.g. AAPL or Microsoft")
-    b1, b2 = st.columns(2)
-    b1.button("Load company", on_click=load_company, type="primary", use_container_width=True)
-    b2.button("Reset", on_click=reset_inputs, use_container_width=True)
+    # A form sends the typed text and the click together (no need to press Enter first)
+    with st.form("lookup", border=False):
+        st.text_input("Look up a company", key="query", placeholder="Ticker or name, e.g. AAPL or Microsoft")
+        st.form_submit_button("Load company", on_click=load_company, type="primary",
+                              use_container_width=True)
+    st.button("Reset to example", on_click=reset_inputs, use_container_width=True)
     msg = st.session_state.get("load_msg")
     if msg:
         getattr(st, msg[0])(msg[1])
@@ -501,6 +503,12 @@ if g_end > 0 and method == "Perpetuity growth" and tg > g_end:
 if tg > 0.04 and method == "Perpetuity growth":
     st.caption("Note: terminal growth above ~4% implies the firm eventually outgrows the whole economy.")
 
+if capex - da > 0.05:
+    st.warning(f"⚠️ CapEx ({pct(capex)} of revenue) is far above D&A ({pct(da)}). The model assumes this "
+               "level of investment continues **forever**, which drags down free cash flow. If the company is "
+               "in a temporary build-out phase, try a CapEx % closer to D&A (e.g. D&A + 1–3 pts) to see a "
+               "steady-state value.")
+
 if r["tv_share_of_ev"] > 0.8:
     st.caption(f"⚠️ Terminal value is {pct(r['tv_share_of_ev'], 0)} of EV. The valuation leans heavily on the long-run assumptions.")
 
@@ -525,7 +533,7 @@ with tab1:
             elif row == "Discount factor":
                 shown.loc[row] = [f"{v:.3f}" for v in table.loc[row]]
             else:
-                shown.loc[row] = [f"{v:,.1f}" for v in table.loc[row]]
+                shown.loc[row] = [f"{v:,.0f}" if abs(v) >= 10_000 else f"{v:,.1f}" for v in table.loc[row]]
         st.dataframe(shown)
 
         fig = go.Figure()

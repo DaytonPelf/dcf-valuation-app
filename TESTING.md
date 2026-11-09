@@ -94,6 +94,8 @@ NWC 10% of Δrevenue, r_f 4.3%, β 1.1, ERP 5.5%, k_d 6%, D/V 25%, g 2.5%, net d
 | Unknown ticker | "ZZZZZ" | Error message, inputs unchanged | "Couldn't find financial statements" | ✓ PASS |
 | Data source down | Simulated connection error | Friendly error, manual entry still works | Message shown, app still runs | ✓ PASS |
 | Reset button | Click Reset | Back to Example Co. defaults | Restored | ✓ PASS |
+| Live test on deployed app | "Microsoft" | Loads MSFT profile, stats, 5Y chart, statements | Loaded Microsoft Corporation (MSFT), price $543.55, revenue $331,839M | ✓ PASS |
+| Heavy-investment warning | MSFT CapEx 34.9% vs D&A 11.6% | Warn that peak CapEx is assumed forever | Warning shown | ✓ PASS |
 
 Manual check of loaded inputs (example): EBIT margin = operating income ÷ revenue; CapEx % =
 |capital expenditure| ÷ revenue; net debt = total debt − cash. Compare these to the Company data
@@ -131,6 +133,12 @@ tab's statements with a calculator.
    - Fix: forced both axes to categories and removed the rounding. The center cell now equals the base case.
 4. **Overlapping chart labels.** The "Market price" and "Base case" labels on the Monte Carlo
    histogram sat on top of each other. Severity: Low. Fix: placed them on opposite sides of their lines.
+
+5. **Typed company name sometimes ignored.** On the deployed app, typing a name and clicking
+   "Load company" without pressing Enter first showed "Type a ticker or company name first."
+   - Severity: Medium. Fix: put the search box and button in a form so they submit together.
+6. **Values carried over between companies.** Loading a second company kept any input the first
+   company filled that the second couldn't. Severity: Low. Fix: reset to defaults before each load.
 
 ## 6. Verification checklist
 
