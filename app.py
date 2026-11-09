@@ -291,10 +291,11 @@ def model_inputs(d: dict) -> tuple[dict, list]:
             n = len(revs) - 1
             cagr = (revs.iloc[-1] / revs.iloc[0]) ** (1 / n) - 1
             vals["g_start"] = clamp(cagr * 100, -20, 50)
-            vals["g_end"] = clamp(min(cagr * 100, 4.0), -20, 50)
+            # Fade toward a long-run rate: final-year growth is the CAGR kept between 2.5% and 4%
+            vals["g_end"] = clamp(cagr * 100, 2.5, 4.0)
             note("Year-1 revenue growth", pct(cagr), f"{n}-year historical revenue CAGR")
             note("Final-year revenue growth", pct(vals["g_end"] / 100),
-                 "Lower of historical CAGR and 4% (assumed fade)")
+                 "Historical CAGR kept between 2.5% and 4% (assumed fade to long-run growth)")
 
         ebit = latest(inc, ROWS["ebit"])
         if ebit is not None:
